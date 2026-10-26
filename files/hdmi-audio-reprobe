@@ -3,14 +3,19 @@
 #
 # FreeBSD's hdac probes HDA codecs at boot, before i915 has enabled display
 # audio, so the codec at HDA address 2 is missed ("CODEC at address 2 not
-# responding!").  A re-probe works only after i915 has actively enabled
-# display audio, therefore force a mode off/on cycle first, then detach and
-# re-attach the HDA controller.
+# responding!").  A re-probe only works after i915 has actively enabled
+# display audio; this script re-applies the HDMI mode (which re-runs the
+# audio enable) and re-attaches the HDA controller.
+#
+# Every external call is wrapped in timeout(1): a wedged X server or GPU
+# must never hang the boot or the watchdog.
 LOG=/var/log/hdmi-audio-reprobe.log
-log() { echo "$(date "+%Y-%m-%d %H:%M:%S") $*" >> "$LOG"; }
+XTMO=8
+DTMO=8
 X=/usr/local/bin/xrandr
 MODE=1920x1080
 RATE=60
+log() { echo "$(date "+%Y-%m-%d %H:%M:%S") $*" >> "$LOG"; }
 
 [ -e /dev/sndstat ] || exit 0
 if grep -q '^pcm' /dev/sndstat; then
@@ -23,29 +28,46 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
-line=$(DISPLAY=:0 "$X" 2>/dev/null | grep '^HDMI-1')
+# only act when X is responsive and HDMI-1 is connected
+line=$(timeout "$XTMO" env DISPLAY=:0 "$X" 2>/dev/null | grep '^HDMI-1')
+rc=$?
+if [ "$rc" -ne 0 ] && [ -z "$line" ]; then
+	log "xrandr failed/timed out (rc=$rc) - skipping"
+	exit 0
+fi
 case "$line" in
 *" connected primary "[0-9]*) ;;
-*" connected "*) DISPLAY=:0 "$X" --output HDMI-1 --mode "$MODE" --rate "$RATE" >/dev/null 2>&1
-	sleep 1 ;;
+*" connected "*) ;;
 *) log "HDMI-1 not connected - skipping"; exit 0 ;;
 esac
 
-i=0
-while [ "$i" -lt 5 ]; do
-	# force an audio enable transition in i915
-	DISPLAY=:0 "$X" --output HDMI-1 --off >/dev/null 2>&1; log "attempt $i: off rc=$?"
+try_reprobe() {
+	timeout "$DTMO" /usr/sbin/devctl detach -f hdac0 >/dev/null 2>&1
 	sleep 1
-	DISPLAY=:0 "$X" --output HDMI-1 --mode "$MODE" --rate "$RATE" >/dev/null 2>&1
+	timeout "$DTMO" /usr/sbin/devctl attach pci0:0:31:3 >/dev/null 2>&1
 	sleep 1
-
-	/usr/sbin/devctl detach -f hdac0 >/dev/null 2>&1; log "attempt $i: detach rc=$?"
-	sleep 1
-	/usr/sbin/devctl attach pci0:0:31:3 >/dev/null 2>&1; log "attempt $i: attach rc=$?"
-	sleep 1
-
 	if grep -q '^pcm' /dev/sndstat; then
-		log "display-audio codec detected (attempt $i)"
+		return 0
+	fi
+	return 1
+}
+
+i=0
+while [ "$i" -lt 4 ]; do
+	# re-apply the mode: triggers i915's audio enable on a fresh commit
+	timeout "$XTMO" env DISPLAY=:0 "$X" --output HDMI-1 --mode "$MODE" --rate "$RATE" >/dev/null 2>&1
+	sleep 1
+	if try_reprobe; then
+		log "display-audio codec detected (attempt $i, mode re-apply)"
+		exit 0
+	fi
+	# fallback: full off/on cycle (heavier, may blip the picture)
+	timeout "$XTMO" env DISPLAY=:0 "$X" --output HDMI-1 --off >/dev/null 2>&1
+	sleep 1
+	timeout "$XTMO" env DISPLAY=:0 "$X" --output HDMI-1 --mode "$MODE" --rate "$RATE" >/dev/null 2>&1
+	sleep 1
+	if try_reprobe; then
+		log "display-audio codec detected (attempt $i, off/on)"
 		exit 0
 	fi
 	i=$((i+1))
