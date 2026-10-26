@@ -7,30 +7,46 @@
 
 name="kodidisplay"
 rcvar="kodidisplay_enable"
+LOCK=/var/run/kodidisplay.lock
 
 start_cmd="${name}_start"
 stop_cmd="${name}_stop"
 
 kodidisplay_start()
 {
-    echo "Starting Xorg + Kodi"
-    if ! pgrep -q -f "Xorg :0"; then rm -f /tmp/.X11-unix/X0 /tmp/.X0-lock; fi
-    /usr/sbin/daemon -o /var/log/kodi-xorg.log -p /var/run/kodi-xorg.pid \
-        /usr/local/libexec/Xorg :0 vt7 -nolisten tcp -ac
-    sleep 5
-    # wait (bounded) for an active HDMI-1 mode
-    i=0
-    while [ "$i" -lt 15 ]; do
-        if timeout 5 env DISPLAY=:0 /usr/local/bin/xrandr 2>/dev/null | grep -q "^HDMI-1 connected primary [0-9]"; then
-            break
-        fi
-        sleep 1
-        i=$((i+1))
-    done
+    # serialise: never start a second Xorg while one is running/starting
+    if ! mkdir "$LOCK" 2>/dev/null; then
+        echo "kodidisplay: already running/starting"
+        return 0
+    fi
+    trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+
+    if pgrep -q -f "Xorg :0"; then
+        echo "kodidisplay: Xorg already running"
+    else
+        echo "Starting Xorg"
+        rm -f /tmp/.X11-unix/X0 /tmp/.X0-lock
+        /usr/sbin/daemon -o /var/log/kodi-xorg.log -p /var/run/kodi-xorg.pid \
+            /usr/local/libexec/Xorg :0 vt7 -nolisten tcp -ac
+        sleep 5
+        i=0
+        while [ "$i" -lt 15 ]; do
+            if timeout 5 env DISPLAY=:0 /usr/local/bin/xrandr 2>/dev/null | grep -q "^HDMI-1 connected primary [0-9]"; then
+                break
+            fi
+            sleep 1
+            i=$((i+1))
+        done
+    fi
+
     # HDMI audio: i915 must have enabled display audio before hdac re-probes
     timeout 60 /usr/local/bin/hdmi-audio-reprobe
-    /usr/sbin/daemon -o /var/log/kodi-run.log -p /var/run/kodi.pid \
-        /usr/bin/env DISPLAY=:0 HOME=/root /usr/local/bin/kodi
+
+    if ! pgrep -q -f "kodi.bin"; then
+        echo "Starting Kodi"
+        /usr/sbin/daemon -o /var/log/kodi-run.log -p /var/run/kodi.pid \
+            /usr/bin/env DISPLAY=:0 HOME=/root /usr/local/bin/kodi
+    fi
 }
 
 kodidisplay_stop()
@@ -39,7 +55,9 @@ kodidisplay_stop()
     [ -f /var/run/kodi.pid ] && kill "$(cat /var/run/kodi.pid)" 2>/dev/null
     sleep 2
     [ -f /var/run/kodi-xorg.pid ] && kill "$(cat /var/run/kodi-xorg.pid)" 2>/dev/null
+    sleep 2
     if ! pgrep -q -f "Xorg :0"; then rm -f /tmp/.X11-unix/X0 /tmp/.X0-lock; fi
+    rmdir "$LOCK" 2>/dev/null
 }
 
 load_rc_config $name
