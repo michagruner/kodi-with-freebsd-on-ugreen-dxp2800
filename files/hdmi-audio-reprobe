@@ -1,0 +1,55 @@
+#!/bin/sh
+# Make the display-audio codec visible to snd_hda.
+#
+# FreeBSD's hdac probes HDA codecs at boot, before i915 has enabled display
+# audio, so the codec at HDA address 2 is missed ("CODEC at address 2 not
+# responding!").  A re-probe works only after i915 has actively enabled
+# display audio, therefore force a mode off/on cycle first, then detach and
+# re-attach the HDA controller.
+LOG=/var/log/hdmi-audio-reprobe.log
+log() { echo "$(date "+%Y-%m-%d %H:%M:%S") $*" >> "$LOG"; }
+X=/usr/local/bin/xrandr
+MODE=1920x1080
+RATE=60
+
+[ -e /dev/sndstat ] || exit 0
+if grep -q '^pcm' /dev/sndstat; then
+	exit 0
+fi
+
+LOCK=/var/run/hdmi-audio-reprobe.lock
+if ! mkdir "$LOCK" 2>/dev/null; then
+	exit 0
+fi
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+
+line=$(DISPLAY=:0 "$X" 2>/dev/null | grep '^HDMI-1')
+case "$line" in
+*" connected primary "[0-9]*) ;;
+*" connected "*) DISPLAY=:0 "$X" --output HDMI-1 --mode "$MODE" --rate "$RATE" >/dev/null 2>&1
+	sleep 1 ;;
+*) log "HDMI-1 not connected - skipping"; exit 0 ;;
+esac
+
+i=0
+while [ "$i" -lt 5 ]; do
+	# force an audio enable transition in i915
+	DISPLAY=:0 "$X" --output HDMI-1 --off >/dev/null 2>&1; log "attempt $i: off rc=$?"
+	sleep 1
+	DISPLAY=:0 "$X" --output HDMI-1 --mode "$MODE" --rate "$RATE" >/dev/null 2>&1
+	sleep 1
+
+	/usr/sbin/devctl detach -f hdac0 >/dev/null 2>&1; log "attempt $i: detach rc=$?"
+	sleep 1
+	/usr/sbin/devctl attach pci0:0:31:3 >/dev/null 2>&1; log "attempt $i: attach rc=$?"
+	sleep 1
+
+	if grep -q '^pcm' /dev/sndstat; then
+		log "display-audio codec detected (attempt $i)"
+		exit 0
+	fi
+	i=$((i+1))
+done
+
+log "display-audio codec still missing after $i attempts"
+exit 1
