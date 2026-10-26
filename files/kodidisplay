@@ -1,0 +1,47 @@
+#!/bin/sh
+# PROVIDE: kodidisplay
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="kodidisplay"
+rcvar="kodidisplay_enable"
+
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+
+kodidisplay_start()
+{
+    echo "Starting Xorg + Kodi"
+    if ! pgrep -q -f "Xorg :0"; then rm -f /tmp/.X11-unix/X0 /tmp/.X0-lock; fi # kodidisplay-guard
+    /usr/sbin/daemon -o /var/log/kodi-xorg.log -p /var/run/kodi-xorg.pid \
+        /usr/local/libexec/Xorg :0 vt7 -nolisten tcp -ac
+    sleep 5
+    # wait for Xorg to have an active mode on HDMI-1
+    i=0
+    while [ "$i" -lt 15 ]; do
+        if DISPLAY=:0 /usr/local/bin/xrandr 2>/dev/null | grep -q "^HDMI-1 connected primary [0-9]"; then
+            break
+        fi
+        sleep 1
+        i=$((i+1))
+    done
+    # HDMI audio: i915 must have enabled display audio before hdac re-probes
+    /usr/local/bin/hdmi-audio-reprobe
+    /usr/sbin/daemon -o /var/log/kodi-run.log -p /var/run/kodi.pid \
+        /usr/bin/env DISPLAY=:0 HOME=/root /usr/local/bin/kodi
+}
+
+kodidisplay_stop()
+{
+    echo "Stopping Kodi + Xorg"
+    [ -f /var/run/kodi.pid ] && kill "$(cat /var/run/kodi.pid)" 2>/dev/null
+    sleep 2
+    [ -f /var/run/kodi-xorg.pid ] && kill "$(cat /var/run/kodi-xorg.pid)" 2>/dev/null
+    if ! pgrep -q -f "Xorg :0"; then rm -f /tmp/.X11-unix/X0 /tmp/.X0-lock; fi # kodidisplay-guard
+}
+
+load_rc_config $name
+: ${kodidisplay_enable:="NO"}
+run_rc_command "$1"
