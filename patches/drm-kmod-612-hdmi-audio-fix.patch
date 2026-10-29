@@ -1,5 +1,5 @@
 diff --git a/drivers/gpu/drm/i915/display/intel_audio.c b/drivers/gpu/drm/i915/display/intel_audio.c
-index afa411e..8b4c698 100644
+index afa411e..835d4fd 100644
 --- a/drivers/gpu/drm/i915/display/intel_audio.c
 +++ b/drivers/gpu/drm/i915/display/intel_audio.c
 @@ -36,6 +36,7 @@
@@ -10,78 +10,38 @@ index afa411e..8b4c698 100644
  #include "intel_display_types.h"
  #include "intel_lpe_audio.h"
  
-@@ -539,6 +540,15 @@ static void enable_audio_dsc_wa(struct intel_encoder *encoder,
- 	intel_de_write(i915, AUD_CONFIG_BE, val);
- }
- 
-+#define AUD_FREQ_TMODE_SHIFT	14
-+#define AUD_FREQ_4T		0
-+#define AUD_FREQ_8T		(2 << AUD_FREQ_TMODE_SHIFT)
-+#define AUD_FREQ_PULLCLKS(x)	(((x) & 0x3) << 11)
-+#define AUD_FREQ_BCLK_96M	BIT(4)
-+
-+#define AUD_FREQ_GEN12          (AUD_FREQ_8T | AUD_FREQ_PULLCLKS(0) | AUD_FREQ_BCLK_96M)
-+#define AUD_FREQ_TGL_BROKEN     (AUD_FREQ_8T | AUD_FREQ_PULLCLKS(2) | AUD_FREQ_BCLK_96M)
-+
- static void hsw_audio_codec_enable(struct intel_encoder *encoder,
- 				   const struct intel_crtc_state *crtc_state,
- 				   const struct drm_connector_state *conn_state)
-@@ -549,6 +559,42 @@ static void hsw_audio_codec_enable(struct intel_encoder *encoder,
+@@ -549,6 +550,19 @@ static void hsw_audio_codec_enable(struct intel_encoder *encoder,
  
  	mutex_lock(&i915->display.audio.mutex);
  
 +	/*
-+	 * FreeBSD has no i915/snd_hda audio component: the power-up and the
-+	 * AUD_FREQ_CNTRL setup which Linux does in
-+	 * i915_audio_component_get_power()/i915_audio_component_init() never
-+	 * run (the latter is only called from intel_audio_init() under
-+	 * #ifdef __linux__).  Without the HDA link clock the display-audio
-+	 * codec at HDA address 2 never answers, even though
-+	 * AUDIO_OUTPUT_ENABLE is set below.
-+	 *
-+	 * The value follows i915_audio_component_init(): AUD_FREQ_GEN12 for
-+	 * GEN12+, the BIOS value before that, and on TGL/RKL the BIOS value
-+	 * unless it is the known-broken value.
++	 * FreeBSD has no audio component, so the power-up done on Linux by
++	 * i915_audio_component_get_power() never happens.  Without the HDA
++	 * link clock the display-audio codec at HDA address 2 never answers,
++	 * even though AUDIO_OUTPUT_ENABLE is set below.
 +	 */
 +	intel_display_power_get(i915, POWER_DOMAIN_AUDIO_PLAYBACK);
-+	if (DISPLAY_VER(i915) >= 9) {
-+		u32 freq = i915->display.audio.freq_cntrl;
-+
-+		if (!freq) {
-+			u32 freq_init = intel_de_read(i915, AUD_FREQ_CNTRL);
-+
-+			if (DISPLAY_VER(i915) >= 12)
-+				freq = AUD_FREQ_GEN12;
-+			else
-+				freq = freq_init;
-+
-+			if ((IS_TIGERLAKE(i915) || IS_ROCKETLAKE(i915)) &&
-+			    freq_init != AUD_FREQ_TGL_BROKEN)
-+				freq = freq_init;
-+		}
-+
-+		i915->display.audio.freq_cntrl = freq;
-+		intel_de_write(i915, AUD_FREQ_CNTRL, freq);
-+	}
++	if (DISPLAY_VER(i915) >= 9)
++		intel_de_write(i915, AUD_FREQ_CNTRL,
++			       i915->display.audio.freq_cntrl);
 +	if (DISPLAY_VER(i915) >= 10)
 +		intel_de_rmw(i915, AUD_PIN_BUF_CTL, 0, AUD_PIN_BUF_ENABLE);
 +
  	/* Enable Audio WA for 4k DSC usecases */
  	if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_DP))
  		enable_audio_dsc_wa(encoder, crtc_state);
-@@ -1254,15 +1300,6 @@ static const struct component_ops i915_audio_component_bind_ops = {
- };
+@@ -1355,6 +1369,14 @@ void intel_audio_init(struct drm_i915_private *i915)
+ 	// No lpe on BSD yet
+ 	if (intel_lpe_audio_init(i915) < 0)
+ 		i915_audio_component_init(i915);
++#else
++	/*
++	 * There is no i915/snd_hda audio component on FreeBSD, but the part
++	 * of i915_audio_component_init() which computes
++	 * display.audio.freq_cntrl (AUD_FREQ_CNTRL) and updates the cdclk
++	 * constraints is required for display audio to work.
++	 */
++	i915_audio_component_init(i915);
  #endif
+ }
  
--#define AUD_FREQ_TMODE_SHIFT	14
--#define AUD_FREQ_4T		0
--#define AUD_FREQ_8T		(2 << AUD_FREQ_TMODE_SHIFT)
--#define AUD_FREQ_PULLCLKS(x)	(((x) & 0x3) << 11)
--#define AUD_FREQ_BCLK_96M	BIT(4)
--
--#define AUD_FREQ_GEN12          (AUD_FREQ_8T | AUD_FREQ_PULLCLKS(0) | AUD_FREQ_BCLK_96M)
--#define AUD_FREQ_TGL_BROKEN     (AUD_FREQ_8T | AUD_FREQ_PULLCLKS(2) | AUD_FREQ_BCLK_96M)
--
- /**
-  * i915_audio_component_init - initialize and register the audio component
-  * @i915: i915 device instance
