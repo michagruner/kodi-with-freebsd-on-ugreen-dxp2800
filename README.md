@@ -92,10 +92,15 @@ Kodi stores its data in `/root/.kodi` (it runs as root, `DISPLAY=:0`).
 `hdac0: CODEC at address 2 not responding!`, Kodi has no audio device.
 
 **Root cause** (see the bug report and diff in
-[patches/](patches/)): FreeBSD's i915 port has no `i915`/`snd_hda` audio
-component and `intel_audio_init()` is a no-op, so the display-audio unit is
-never enabled and `AUD_FREQ_CNTRL` is never programmed. The HDA codec at
-address 2 stays silent.
+[patches/](patches/)): the audio-enable decision is actually correct
+(instrumented build: `has_hdmi_sink=1`, `display_info.has_audio=1`,
+`force_audio=AUTO`, so `hsw_audio_codec_enable()` runs). What is missing is
+the **HDA link clock**: FreeBSD's i915 port has no audio component, so the
+power-up and `AUD_FREQ_CNTRL` programming inside
+`i915_audio_component_get_power()` / `i915_audio_component_init()` are
+`#ifdef __linux__` no-ops. `AUD_FREQ_CNTRL` is never written, so the HDA
+codec at address 2 stays silent. The patch is one file
+(`intel_audio.c`); no `intel_hdmi.c` change is needed.
 
 **Fix:** build drm-kmod 6.12-lts with the patch in this repo:
 
@@ -126,11 +131,13 @@ pass. After Xorg/Kodi has set a mode, force an audio-enable cycle and
 re-probe:
 
 ```sh
-xrandr --output HDMI-1 --off
 xrandr --output HDMI-1 --mode 1920x1080 --rate 60
 devctl detach -f hdac0
 devctl attach pci0:0:31:3
 ```
+
+(if a plain mode re-apply does not trigger a fresh audio-enable commit, an
+`xrandr --output HDMI-1 --off` first, then the `--mode` line, also works)
 
 This is automated by [files/hdmi-audio-reprobe](files/hdmi-audio-reprobe),
 called from `kodidisplay` (before Kodi starts) and from the watchdog (after
