@@ -101,8 +101,9 @@ power-up and `AUD_FREQ_CNTRL` programming inside
 `#ifdef __linux__` no-ops. `AUD_FREQ_CNTRL` is never written, so the HDA
 codec at address 2 stays silent. The patch is one file
 (`intel_audio.c`) and programs `AUD_FREQ_CNTRL` with the existing
-`AUD_FREQ_GEN12` macro (with the TGL/RKL BIOS-value quirk from
-`i915_audio_component_init()`); no `intel_hdmi.c` change is needed.
+`AUD_FREQ_GEN12` macro (with the TGL/RKL BIOS-value quirk) by calling the
+existing `i915_audio_component_init()` on FreeBSD, plus the power/pin-buffer
+writes in `hsw_audio_codec_enable()`; no `intel_hdmi.c` change is needed.
 
 **Fix:** build drm-kmod 6.12-lts with the patch in this repo:
 
