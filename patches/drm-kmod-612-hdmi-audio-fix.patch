@@ -1,5 +1,5 @@
 diff --git a/drivers/gpu/drm/i915/display/intel_audio.c b/drivers/gpu/drm/i915/display/intel_audio.c
-index afa411e..c96316c 100644
+index afa411e..0bc714e 100644
 --- a/drivers/gpu/drm/i915/display/intel_audio.c
 +++ b/drivers/gpu/drm/i915/display/intel_audio.c
 @@ -36,6 +36,7 @@
@@ -10,28 +10,44 @@ index afa411e..c96316c 100644
  #include "intel_display_types.h"
  #include "intel_lpe_audio.h"
  
-@@ -549,6 +550,29 @@ static void hsw_audio_codec_enable(struct intel_encoder *encoder,
+@@ -539,6 +540,15 @@ static void enable_audio_dsc_wa(struct intel_encoder *encoder,
+ 	intel_de_write(i915, AUD_CONFIG_BE, val);
+ }
+ 
++#define AUD_FREQ_TMODE_SHIFT	14
++#define AUD_FREQ_4T		0
++#define AUD_FREQ_8T		(2 << AUD_FREQ_TMODE_SHIFT)
++#define AUD_FREQ_PULLCLKS(x)	(((x) & 0x3) << 11)
++#define AUD_FREQ_BCLK_96M	BIT(4)
++
++#define AUD_FREQ_GEN12          (AUD_FREQ_8T | AUD_FREQ_PULLCLKS(0) | AUD_FREQ_BCLK_96M)
++#define AUD_FREQ_TGL_BROKEN     (AUD_FREQ_8T | AUD_FREQ_PULLCLKS(2) | AUD_FREQ_BCLK_96M)
++
+ static void hsw_audio_codec_enable(struct intel_encoder *encoder,
+ 				   const struct intel_crtc_state *crtc_state,
+ 				   const struct drm_connector_state *conn_state)
+@@ -549,6 +559,29 @@ static void hsw_audio_codec_enable(struct intel_encoder *encoder,
  
  	mutex_lock(&i915->display.audio.mutex);
  
 +	/*
-+	 * FreeBSD has no i915/snd_hda audio component, so the power-up done
-+	 * on Linux by i915_audio_component_get_power() and the AUD_FREQ_CNTRL
-+	 * setup in i915_audio_component_init() (both #ifdef __linux__ in this
-+	 * port) never run.  Without the HDA link clock the display-audio codec
-+	 * at HDA address 2 never answers ("CODEC at address 2 not
-+	 * responding!"), even when AUDIO_OUTPUT_ENABLE is set below.
++	 * FreeBSD has no i915/snd_hda audio component: the power-up and the
++	 * AUD_FREQ_CNTRL setup which Linux does in
++	 * i915_audio_component_get_power()/i915_audio_component_init() never
++	 * run (the latter is only called from intel_audio_init() under
++	 * #ifdef __linux__).  Without the HDA link clock the display-audio
++	 * codec at HDA address 2 never answers, even though
++	 * AUDIO_OUTPUT_ENABLE is set below.
 +	 */
 +	intel_display_power_get(i915, POWER_DOMAIN_AUDIO_PLAYBACK);
 +	if (DISPLAY_VER(i915) >= 9) {
 +		u32 freq = i915->display.audio.freq_cntrl;
 +
-+		if (!freq) {
-+			if (DISPLAY_VER(i915) >= 12)
-+				freq = 0x8010; /* AUD_FREQ_GEN12 */
-+			else
-+				freq = intel_de_read(i915, AUD_FREQ_CNTRL);
-+		}
++		if (!freq)
++			freq = DISPLAY_VER(i915) >= 12 ? AUD_FREQ_GEN12 :
++			       intel_de_read(i915, AUD_FREQ_CNTRL);
++
++		i915->display.audio.freq_cntrl = freq;
 +		intel_de_write(i915, AUD_FREQ_CNTRL, freq);
 +	}
 +	if (DISPLAY_VER(i915) >= 10)
@@ -40,3 +56,19 @@ index afa411e..c96316c 100644
  	/* Enable Audio WA for 4k DSC usecases */
  	if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_DP))
  		enable_audio_dsc_wa(encoder, crtc_state);
+@@ -1254,15 +1287,6 @@ static const struct component_ops i915_audio_component_bind_ops = {
+ };
+ #endif
+ 
+-#define AUD_FREQ_TMODE_SHIFT	14
+-#define AUD_FREQ_4T		0
+-#define AUD_FREQ_8T		(2 << AUD_FREQ_TMODE_SHIFT)
+-#define AUD_FREQ_PULLCLKS(x)	(((x) & 0x3) << 11)
+-#define AUD_FREQ_BCLK_96M	BIT(4)
+-
+-#define AUD_FREQ_GEN12          (AUD_FREQ_8T | AUD_FREQ_PULLCLKS(0) | AUD_FREQ_BCLK_96M)
+-#define AUD_FREQ_TGL_BROKEN     (AUD_FREQ_8T | AUD_FREQ_PULLCLKS(2) | AUD_FREQ_BCLK_96M)
+-
+ /**
+  * i915_audio_component_init - initialize and register the audio component
+  * @i915: i915 device instance
