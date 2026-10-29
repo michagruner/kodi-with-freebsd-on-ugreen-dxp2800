@@ -1,5 +1,5 @@
 diff --git a/drivers/gpu/drm/i915/display/intel_audio.c b/drivers/gpu/drm/i915/display/intel_audio.c
-index afa411e..0bc714e 100644
+index afa411e..8b4c698 100644
 --- a/drivers/gpu/drm/i915/display/intel_audio.c
 +++ b/drivers/gpu/drm/i915/display/intel_audio.c
 @@ -36,6 +36,7 @@
@@ -26,7 +26,7 @@ index afa411e..0bc714e 100644
  static void hsw_audio_codec_enable(struct intel_encoder *encoder,
  				   const struct intel_crtc_state *crtc_state,
  				   const struct drm_connector_state *conn_state)
-@@ -549,6 +559,29 @@ static void hsw_audio_codec_enable(struct intel_encoder *encoder,
+@@ -549,6 +559,42 @@ static void hsw_audio_codec_enable(struct intel_encoder *encoder,
  
  	mutex_lock(&i915->display.audio.mutex);
  
@@ -38,14 +38,27 @@ index afa411e..0bc714e 100644
 +	 * #ifdef __linux__).  Without the HDA link clock the display-audio
 +	 * codec at HDA address 2 never answers, even though
 +	 * AUDIO_OUTPUT_ENABLE is set below.
++	 *
++	 * The value follows i915_audio_component_init(): AUD_FREQ_GEN12 for
++	 * GEN12+, the BIOS value before that, and on TGL/RKL the BIOS value
++	 * unless it is the known-broken value.
 +	 */
 +	intel_display_power_get(i915, POWER_DOMAIN_AUDIO_PLAYBACK);
 +	if (DISPLAY_VER(i915) >= 9) {
 +		u32 freq = i915->display.audio.freq_cntrl;
 +
-+		if (!freq)
-+			freq = DISPLAY_VER(i915) >= 12 ? AUD_FREQ_GEN12 :
-+			       intel_de_read(i915, AUD_FREQ_CNTRL);
++		if (!freq) {
++			u32 freq_init = intel_de_read(i915, AUD_FREQ_CNTRL);
++
++			if (DISPLAY_VER(i915) >= 12)
++				freq = AUD_FREQ_GEN12;
++			else
++				freq = freq_init;
++
++			if ((IS_TIGERLAKE(i915) || IS_ROCKETLAKE(i915)) &&
++			    freq_init != AUD_FREQ_TGL_BROKEN)
++				freq = freq_init;
++		}
 +
 +		i915->display.audio.freq_cntrl = freq;
 +		intel_de_write(i915, AUD_FREQ_CNTRL, freq);
@@ -56,7 +69,7 @@ index afa411e..0bc714e 100644
  	/* Enable Audio WA for 4k DSC usecases */
  	if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_DP))
  		enable_audio_dsc_wa(encoder, crtc_state);
-@@ -1254,15 +1287,6 @@ static const struct component_ops i915_audio_component_bind_ops = {
+@@ -1254,15 +1300,6 @@ static const struct component_ops i915_audio_component_bind_ops = {
  };
  #endif
  
