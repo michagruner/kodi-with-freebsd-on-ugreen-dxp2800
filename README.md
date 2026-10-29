@@ -100,7 +100,8 @@ power-up and `AUD_FREQ_CNTRL` programming inside
 `i915_audio_component_get_power()` / `i915_audio_component_init()` are
 `#ifdef __linux__` no-ops. `AUD_FREQ_CNTRL` is never written, so the HDA
 codec at address 2 stays silent. The patch is one file
-(`intel_audio.c`); no `intel_hdmi.c` change is needed.
+(`intel_audio.c`) and programs `AUD_FREQ_CNTRL` with the existing
+`AUD_FREQ_GEN12` macro; no `intel_hdmi.c` change is needed.
 
 **Fix:** build drm-kmod 6.12-lts with the patch in this repo:
 
