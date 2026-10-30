@@ -169,7 +169,10 @@ alive. It also makes Kodi follow the TV without CEC:
   re-probed and Kodi is started after the link has been stable for ~20 s
   (`CONNECT_STABLE_TICKS`), which tolerates the link flapping of a waking TV;
 * at boot `rc.d/kodidisplay` only starts Kodi when HDMI is already active,
-  otherwise the watchdog starts it when the TV is switched on.
+  otherwise the watchdog starts it when the TV is switched on;
+* `files/newsyslog-kodi.conf` rotates the Kodi/watchdog logs, and the
+  watchdog truncates `/var/log/messages` above 64 MiB (a drm vblank WARN
+  loop once produced 145 GB of kernel log during TV transitions).
 
 ## 6. PVR with TVHeadend (optional)
 
