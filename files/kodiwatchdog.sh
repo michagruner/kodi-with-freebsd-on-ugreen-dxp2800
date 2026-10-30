@@ -1,6 +1,13 @@
 #!/bin/sh
 # Keep the HDMI output active, HDMI audio present and Kodi alive.
-# Every external call is wrapped in timeout(1); a wedged X/GPU must not hang
+# Also suspend Kodi when the TV is switched off (HDMI sink disconnects) and
+# start it again when the TV comes back.
+#
+# The HDMI link often flaps for a few seconds while a TV wakes up, so Kodi is
+# only started after the link has been stable for CONNECT_STABLE_TICKS, and
+# only stopped after OFFLINE_STOP_TICKS of continuous disconnect.
+#
+# Every external call is wrapped in timeout(1): a wedged X/GPU must not hang
 # the watchdog.  Xorg is only restarted via rc.d/kodidisplay (which locks).
 
 PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
@@ -8,6 +15,8 @@ PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
 MODE=1920x1080
 RATE=60
 INTERVAL=10
+CONNECT_STABLE_TICKS=2	# ~20 s of connected link before Kodi is started
+OFFLINE_STOP_TICKS=3	# ~30 s of disconnected link before Kodi is stopped
 LOG=/var/log/kodiwatchdog.log
 XTMO=6
 REPROBE=/usr/local/bin/hdmi-audio-reprobe
@@ -16,12 +25,47 @@ export DISPLAY=:0
 
 log() { echo "$(date "+%Y-%m-%d %H:%M:%S") $*" >> "$LOG"; }
 x_up() { pgrep -q -f "Xorg :0"; }
-kodi_up() { pgrep -q -f "kodi.bin"; }
+kodi_up() { pgrep -x kodi.bin >/dev/null 2>&1; }
 xrandr_t() { timeout "$XTMO" /usr/local/bin/xrandr "$@"; }
 
+ensure_audio() {
+    if grep -q '^pcm' /dev/sndstat; then
+        return 0
+    fi
+    timeout 60 "$REPROBE"
+}
+
 start_kodi() {
+    if kodi_up; then
+        return 0
+    fi
+    log "starting Kodi"
     /usr/sbin/daemon -o /var/log/kodi-run.log -p /var/run/kodi.pid \
         /usr/bin/env DISPLAY=:0 HOME=/root /usr/local/bin/kodi
+}
+
+stop_kodi() {
+    log "TV off - stopping Kodi"
+    # graceful quit first (saves settings/library state)
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"Application.Quit"}' \
+        | nc -6 -N ::1 9090 >/dev/null 2>&1
+    i=0
+    while [ "$i" -lt 10 ] && kodi_up; do
+        sleep 1
+        i=$((i+1))
+    done
+    if kodi_up; then
+        pkill -TERM -f kodi.bin 2>/dev/null
+        i=0
+        while [ "$i" -lt 5 ] && kodi_up; do
+            sleep 1
+            i=$((i+1))
+        done
+    fi
+    if kodi_up; then
+        pkill -9 -f kodi.bin 2>/dev/null
+    fi
+    log "Kodi stopped"
 }
 
 restart_kodi() {
@@ -41,12 +85,18 @@ restart_display() {
     /usr/local/etc/rc.d/kodidisplay onestart </dev/null >/dev/null 2>&1
 }
 
-log "watchdog started"
+sink=unknown
+connected_ticks=0
+offline_ticks=0
+log "watchdog started (start after ${CONNECT_STABLE_TICKS}, stop after ${OFFLINE_STOP_TICKS} ticks)"
 
 while :; do
     if ! x_up; then
         log "Xorg is not running"
         restart_display
+        sink=unknown
+        connected_ticks=0
+        offline_ticks=0
         sleep 20
         continue
     fi
@@ -59,24 +109,55 @@ while :; do
 
     case "$line" in
         *" connected primary "[0-9]*)
-            : ;;
+            offline_ticks=0
+            if [ "$sink" != connected ]; then
+                log "HDMI-1 connected and active"
+                sink=connected
+            fi
+            connected_ticks=$((connected_ticks+1))
+            if ! kodi_up; then
+                if [ "$connected_ticks" -ge "$CONNECT_STABLE_TICKS" ]; then
+                    ensure_audio || log "audio codec still missing (TV on)"
+                    start_kodi
+                fi
+            fi
+            ;;
         *" connected "*)
+            offline_ticks=0
+            if [ "$sink" != connected ]; then
+                log "HDMI-1 connected (inactive)"
+                sink=connected
+                connected_ticks=0
+            fi
+            connected_ticks=$((connected_ticks+1))
             log "HDMI-1 connected but inactive - re-enabling"
             xrandr_t --output HDMI-1 --mode "$MODE" --rate "$RATE" --primary >>"$LOG" 2>&1
             sleep 2
-            if timeout 60 "$REPROBE"; then
-                log "audio codec reprobe succeeded after re-enable"
-                if kodi_up; then restart_kodi; fi
+            ensure_audio && log "audio codec reprobe ok after re-enable"
+            if [ "$connected_ticks" -ge "$CONNECT_STABLE_TICKS" ]; then
+                if kodi_up; then
+                    restart_kodi
+                else
+                    start_kodi
+                fi
             fi
             ;;
         *" disconnected "*)
-            : ;;
+            connected_ticks=0
+            if [ "$sink" != disconnected ]; then
+                log "HDMI-1 disconnected (TV off?)"
+                sink=disconnected
+                offline_ticks=0
+            fi
+            offline_ticks=$((offline_ticks+1))
+            if [ "$offline_ticks" -ge "$OFFLINE_STOP_TICKS" ] && kodi_up; then
+                stop_kodi
+            fi
+            ;;
+        *)
+            log "HDMI-1 state not recognised: $line"
+            ;;
     esac
-
-    if ! kodi_up; then
-        log "Kodi not running - restarting"
-        start_kodi
-    fi
 
     sleep "$INTERVAL"
 done
