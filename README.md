@@ -156,22 +156,20 @@ and Kodi uses `OSS:/dev/dsp0|pcm0`.
 > Upgrades of `drm-612-kmod` overwrite the patched modules - re-apply the
 > patch and rebuild. Upstream bug: FreeBSD 285156, drm-kmod issue #296.
 
-## 5. TV hotplug watchdog
+## 5. TV hotplug watchdog and TV-off suspension
 
-FreeBSD's Xorg/i915 does not reliably re-enable the CRTC when the TV is
-switched off and back on, which leaves a black screen. The watchdog
-([files/kodiwatchdog.sh](files/kodiwatchdog.sh)) runs every 10 s, re-applies
-`1920x1080@60` via `xrandr` when `HDMI-1` is connected but inactive,
-re-probes HDMI audio after that, and restarts Xorg/Kodi if they die.
-Log: `/var/log/kodiwatchdog.log`.
+`files/kodiwatchdog.sh` runs from `rc.d/kodiwatchdog` and keeps the display
+alive. It also makes Kodi follow the TV without CEC:
 
-Manual recovery helper if ever needed:
-
-```sh
-pkill -9 -f 'Xorg :0'; pkill -9 -f kodi.bin
-rm -f /tmp/.X11-unix/X0
-/usr/local/etc/rc.d/kodidisplay onestart </dev/null >/dev/null 2>&1
-```
+* when the TV is switched off the HDMI sink disconnects; after ~30 s
+  (`OFFLINE_STOP_TICKS`) Kodi is quit gracefully via JSON-RPC
+  (`Application.Quit`, fallback TERM/KILL), Xorg stays up;
+* when the TV comes back the output is re-enabled
+  (`xrandr --mode 1920x1080 --rate 60 --primary`), the HDMI audio codec is
+  re-probed and Kodi is started after the link has been stable for ~20 s
+  (`CONNECT_STABLE_TICKS`), which tolerates the link flapping of a waking TV;
+* at boot `rc.d/kodidisplay` only starts Kodi when HDMI is already active,
+  otherwise the watchdog starts it when the TV is switched on.
 
 ## 6. PVR with TVHeadend (optional)
 
