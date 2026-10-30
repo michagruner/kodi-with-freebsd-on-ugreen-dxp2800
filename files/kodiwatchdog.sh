@@ -18,6 +18,8 @@ INTERVAL=10
 CONNECT_STABLE_TICKS=2	# ~20 s of connected link before Kodi is started
 OFFLINE_STOP_TICKS=3	# ~30 s of disconnected link before Kodi is stopped
 LOG=/var/log/kodiwatchdog.log
+MSG_LOG=/var/log/messages
+MSG_CAP=67108864	# 64 MiB - guard against kernel log floods
 XTMO=6
 REPROBE=/usr/local/bin/hdmi-audio-reprobe
 
@@ -27,6 +29,19 @@ log() { echo "$(date "+%Y-%m-%d %H:%M:%S") $*" >> "$LOG"; }
 x_up() { pgrep -q -f "Xorg :0"; }
 kodi_up() { pgrep -x kodi.bin >/dev/null 2>&1; }
 xrandr_t() { timeout "$XTMO" /usr/local/bin/xrandr "$@"; }
+
+# The default newsyslog checks sizes only hourly, so a kernel print loop can
+# fill the disk; cap /var/log/messages and let syslogd reopen it.
+check_messages() {
+    [ -f "$MSG_LOG" ] || return 0
+    size=$(stat -f %z "$MSG_LOG" 2>/dev/null) || return 0
+    if [ "$size" -gt "$MSG_CAP" ]; then
+        log "WARNING: $MSG_LOG grew to ${size} bytes (kernel log flood?) - truncating"
+        : > "$MSG_LOG"
+        pid=$(cat /var/run/syslog.pid 2>/dev/null)
+        [ -n "$pid" ] && kill -HUP "$pid" 2>/dev/null
+    fi
+}
 
 ensure_audio() {
     if grep -q '^pcm' /dev/sndstat; then
@@ -131,7 +146,7 @@ while :; do
             fi
             connected_ticks=$((connected_ticks+1))
             log "HDMI-1 connected but inactive - re-enabling"
-            xrandr_t --output HDMI-1 --mode "$MODE" --rate "$RATE" --primary >>"$LOG" 2>&1
+            xrandr_t --output HDMI-1 --mode "$MODE" --rate "$RATE" --primary >/dev/null 2>&1
             sleep 2
             ensure_audio && log "audio codec reprobe ok after re-enable"
             if [ "$connected_ticks" -ge "$CONNECT_STABLE_TICKS" ]; then
@@ -159,5 +174,6 @@ while :; do
             ;;
     esac
 
+    check_messages
     sleep "$INTERVAL"
 done
