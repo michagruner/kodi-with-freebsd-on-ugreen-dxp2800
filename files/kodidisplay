@@ -14,7 +14,6 @@ stop_cmd="${name}_stop"
 
 kodidisplay_start()
 {
-    # serialise: never start a second Xorg while one is running/starting
     if ! mkdir "$LOCK" 2>/dev/null; then
         echo "kodidisplay: already running/starting"
         return 0
@@ -42,10 +41,16 @@ kodidisplay_start()
     # HDMI audio: i915 must have enabled display audio before hdac re-probes
     timeout 60 /usr/local/bin/hdmi-audio-reprobe
 
-    if ! pgrep -q -f "kodi.bin"; then
-        echo "Starting Kodi"
-        /usr/sbin/daemon -o /var/log/kodi-run.log -p /var/run/kodi.pid \
-            /usr/bin/env DISPLAY=:0 HOME=/root /usr/local/bin/kodi
+    # Only start Kodi when there is an active HDMI output; if the TV is off,
+    # the watchdog starts Kodi once the TV comes on.
+    if timeout 5 env DISPLAY=:0 /usr/local/bin/xrandr 2>/dev/null | grep -q "^HDMI-1 connected primary [0-9]"; then
+        if ! pgrep -q -f "kodi.bin"; then
+            echo "Starting Kodi"
+            /usr/sbin/daemon -o /var/log/kodi-run.log -p /var/run/kodi.pid \
+                /usr/bin/env DISPLAY=:0 HOME=/root /usr/local/bin/kodi
+        fi
+    else
+        echo "kodidisplay: HDMI not active (TV off?) - watchdog starts Kodi when TV is on"
     fi
 }
 
